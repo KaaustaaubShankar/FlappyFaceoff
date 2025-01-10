@@ -23,9 +23,10 @@ class FlappyBirdEnv(gym.Env):
         # Action space: 0 = do nothing, 1 = flap
         self.action_space = spaces.Discrete(2)
         
-        # Observation space: (bird_y, bird_velocity, distances_to_next_pipes, gap_positions)
-        low = np.array([0, -10] + [0]*3 + [0]*3)  # For 3 pipes
-        high = np.array([SCREEN_HEIGHT, 10] + [SCREEN_WIDTH]*3 + [SCREEN_HEIGHT]*3)
+        # Observation space: (bird_y, bird_velocity, dx_to_next_gap, dy_to_next_gap)
+        # Changed to include separate x and y distances to the next gap center
+        low = np.array([0, -10, -PIPE_WIDTH, -SCREEN_HEIGHT])
+        high = np.array([SCREEN_HEIGHT, 10, SCREEN_WIDTH, SCREEN_HEIGHT])
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
         
         # Game state variables
@@ -56,10 +57,21 @@ class FlappyBirdEnv(gym.Env):
         return self.get_observation()
 
     def get_observation(self):
-        # Bird's Y position, velocity, distances to pipes, pipe gap positions
-        pipe_distances = [p[0] for p in self.pipes]
-        pipe_gaps = [p[1] for p in self.pipes]
-        return np.array([self.bird_y, self.bird_velocity] + pipe_distances + pipe_gaps)
+        # Find the next pipe (the first pipe that hasn't been passed)
+        next_pipe = None
+        for pipe_x, gap_y in self.pipes:
+            if pipe_x + PIPE_WIDTH > 50:  # If pipe hasn't completely passed the bird
+                next_pipe = (pipe_x, gap_y)
+                break
+        
+        if next_pipe is None:  # Fallback if no pipe is found
+            next_pipe = self.pipes[0]
+        
+        # Calculate horizontal and vertical distances to next gap center separately
+        dx = next_pipe[0] - 50  # 50 is bird's x position
+        dy = (next_pipe[1] + PIPE_GAP/2) - (self.bird_y + BIRD_HEIGHT/2)
+        
+        return np.array([self.bird_y, self.bird_velocity, dx, dy])
 
     def step(self, action):
         # Handle action
@@ -112,8 +124,9 @@ class FlappyBirdEnv(gym.Env):
         if self.game_over:
             reward = -10  # Negative reward for dying
         elif scored:
-            print("Line 115: GAP")
             reward = 10  # Positive reward for passing through the gap
+        elif self.bird_y == 0:  # Bird touches the top
+            reward = -1  # Decrease reward when hitting top
         else:
             reward = 0.1  # slight reward for just staying alive to prevent early flatline
 

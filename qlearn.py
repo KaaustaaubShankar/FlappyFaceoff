@@ -79,7 +79,7 @@ def train():
     total_rewards = 0
     rewards_list = []  
 
-    for episode in range(100000):  # Number of episodes
+    for episode in range(20000):  # Number of episodes
         state = env.reset()
         done = False
         episode_reward = 0  
@@ -138,4 +138,5 @@ def play():
     env.close()
 
 if __name__ == '__main__':
+    train()
     play()
