@@ -34,7 +34,7 @@ class QLearningAgent:
         
         # If the state is not in the Q-table, initialize it with zeros
         if state_index not in self.Q:
-            self.Q[state_index] = np.zeros(self.action_space.n)
+            self.Q[state_index] = np.full(self.action_space.n, 2)
         
         if random.uniform(0, 1) < self.epsilon:  # Exploration
             return self.action_space.sample()
@@ -79,7 +79,7 @@ def train():
     total_rewards = 0
     rewards_list = []  
 
-    for episode in range(20000):  # Number of episodes
+    for episode in range(1500):  # Number of episodes
         state = env.reset()
         done = False
         episode_reward = 0  
@@ -115,10 +115,12 @@ def train():
     print(f"Min Reward: {min_reward}")
     print(f"25th Percentile: {np.percentile(rewards_list, 25)}")
     print(f"75th Percentile: {np.percentile(rewards_list, 75)}")
+    print(agent.Q)
     env.close()
 
 def play():
     """Watch the trained agent play"""
+    random.seed(42)
     env = FlappyBirdEnv(render_mode=True)  # Enable rendering
     agent = QLearningAgent(env.action_space, state_space=env.observation_space)
     agent.load('best_agent.pkl')  # Load the best trained agent

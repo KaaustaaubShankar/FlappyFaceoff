@@ -3,6 +3,7 @@ import random
 import numpy as np
 import gym
 from gym import spaces
+import random
 
 # Constants
 SCREEN_WIDTH = 600
@@ -18,6 +19,7 @@ pygame.init()
 
 class FlappyBirdEnv(gym.Env):
     def __init__(self, render_mode=False):
+        random.seed(42)
         super(FlappyBirdEnv, self).__init__()
 
         # Action space: 0 = do nothing, 1 = flap
@@ -57,18 +59,27 @@ class FlappyBirdEnv(gym.Env):
         return self.get_observation()
 
     def get_observation(self):
-        # Find the next pipe (the first pipe that hasn't been passed)
+        # Find the closest pipe that hasn't been passed yet
         next_pipe = None
-        for pipe_x, gap_y in self.pipes:
-            if pipe_x + PIPE_WIDTH > 50:  # If pipe hasn't completely passed the bird
-                next_pipe = (pipe_x, gap_y)
-                break
+        min_distance = float('inf')  # Track closest pipe
         
-        if next_pipe is None:  # Fallback if no pipe is found
+        for pipe_x, gap_y in self.pipes:
+            # Calculate horizontal distance from bird to pipe's right edge
+            distance_to_pipe = pipe_x - 50  # 50 is bird's x position
+            
+            # Only consider pipes that are still ahead of the bird
+            if distance_to_pipe + PIPE_WIDTH > 0:
+                # Track the closest pipe
+                if distance_to_pipe < min_distance:
+                    min_distance = distance_to_pipe
+                    next_pipe = (pipe_x, gap_y)
+        
+        # Fallback to first pipe if none found (shouldn't happen)
+        if next_pipe is None:
             next_pipe = self.pipes[0]
         
-        # Calculate horizontal and vertical distances to next gap center separately
-        dx = next_pipe[0] - 50  # 50 is bird's x position
+        # Calculate observation values
+        dx = next_pipe[0] - 50
         dy = (next_pipe[1] + PIPE_GAP/2) - (self.bird_y + BIRD_HEIGHT/2)
         
         return np.array([self.bird_y, self.bird_velocity, dx, dy])
@@ -122,7 +133,7 @@ class FlappyBirdEnv(gym.Env):
 
         # Reward structure
         if self.game_over:
-            reward = -10  # Negative reward for dying
+            reward = -1  # Negative reward for dying
         elif scored:
             reward = 10  # Positive reward for passing through the gap
         elif self.bird_y == 0:  # Bird touches the top
@@ -163,6 +174,14 @@ def play_game():
     state = env.reset()
     done = False
     
+    total_steps = 0  # Initialize step counter
+    total_score = 0  # Initialize score counter
+    start_time = pygame.time.get_ticks()  # Start time for measuring duration
+
+    # Open a file to write observation space
+    with open('observation_space.txt', 'w') as f:
+        f.write("Observation Space:\n")
+
     while not done:
         env.render()
         
@@ -177,10 +196,30 @@ def play_game():
         
         state, reward, done, _ = env.step(action)
         
-    print(f"Game Over! Final Score: {env.score}")
+        # Update total steps and score
+        total_steps += 1  # Increment step counter
+        total_score = env.score  # Update total score
+
+        # Write observation space to file every step
+        with open('observation_space.txt', 'a') as f:
+            f.write(f"  Observation: {state}\n")
+
+        # Write additional divider when we go through a pipe
+        if env.passed_pipes:
+            with open('observation_space.txt', 'a') as f:
+                f.write("  Went through pipe\n")
+
+    end_time = pygame.time.get_ticks()  # End time for measuring duration
+    duration = (end_time - start_time) / 1000  # Duration in seconds
+
+    # Output final results
+    print(f"Game Over! Final Score: {total_score}")
+    print(f"Total Steps: {total_steps}")
+    print(f"Duration: {duration:.2f} seconds")
+    
     env.close()
 
-'''
+
 if __name__ == "__main__":
     play_game()
-'''
+
