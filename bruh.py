@@ -21,7 +21,7 @@ while True:
     if terminated:
         break
 
-print("Minimum of obs[0:7] and obs[9]: ", min_obs)
-print("Maximum of obs[0:7] and obs[9]: ", max_obs)
+print("\nMinimum of obs[0:7] and obs[9]: ", min_obs)
+print("\nMaximum of obs[0:7] and obs[9]: ", max_obs)
 
 env.close()

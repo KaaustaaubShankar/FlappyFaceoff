@@ -1,4 +1,5 @@
 import gymnasium as gym
+from gym.wrappers import RecordVideo
 import flappy_bird_gymnasium
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,24 +7,18 @@ import pygame
 import imageio
 import os
 from datetime import datetime
+import pygame
+
+pygame.init()
 
 # Global GA parameters
-POP_SIZE = 200
-N_GENERATIONS = 15
-TOURNAMENT_SIZE = 3
+POP_SIZE = 500
+N_GENERATIONS = 100
+TOURNAMENT_SIZE = 5
 CX_PROB = 0.7
 MUT_PROB = 0.2
 
-class SeedWrapper(gym.Wrapper):
-    def __init__(self, env: gym.Env, seed: int):
-        super().__init__(env)
-        self._seed = seed
 
-    def reset(self, **kwargs):
-        # Use stored seed unless explicitly provided
-        if 'seed' not in kwargs:
-            kwargs['seed'] = self._seed
-        return super().reset(**kwargs)
 class GeneticFuzzyControllerFlappyBird:
     def __init__(self, n_mfs=3):
         self.n_inputs = 7  # Updated to 7 inputs
@@ -108,75 +103,59 @@ class GeneticFuzzyControllerFlappyBird:
         return np.concatenate([centers, rule_params])
 
     def fitness(self, individual, render=False):
-        render_mode = "human" if render else None
-        # Create base environment and wrap with seed control
-        base_env = gym.make("FlappyBird-v0", render_mode=render_mode, use_lidar=False)
-        env = SeedWrapper(base_env, seed=4255)  # Fixed seed for all evaluations
+        render_mode = "rgb_array" if render else None
+        env = gym.make("FlappyBird-v0", render_mode=render_mode, use_lidar=False)
+        
+        # Create video directory if needed
+        if render:
+            os.makedirs("videos", exist_ok=True)
+            env = RecordVideo(
+                env=env,
+                video_folder="videos",
+                name_prefix=f"flappy_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                episode_trigger=lambda x: True  # Record every episode
+            )
+        
         total_reward = 0
         frames = []
         
         try:
-            for episode in range(5):
-                observation, _ = env.reset()
-                episode_frames = []
-                done = False
+            observation, _ = env.reset(seed=42)
+            done = False
+            
+            while not done:
+                if render:
+                    # Handle pygame quit event
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            env.close()
+                            return total_reward
+
+                # Extract relevant inputs from observation
+                selected_inputs = [
+                    observation[0],  # horizontal distance to next pipe
+                    observation[1],  # vertical distance to top of next gap
+                    observation[2],  # vertical distance to bottom of next gap
+                    observation[3],  # bird's vertical position (y)
+                    observation[4],  # bird's velocity
+                    observation[5],  # horizontal distance to next-next pipe
+                    observation[9]  # vertical distance to next-next gap's top
+                ]
                 
-                while not done:
-                    # Handle pygame events
-                    if render:
-                        for event in pygame.event.get():
-                            if event.type == pygame.QUIT:
-                                env.close()
-                                return total_reward / 5
-
-                    # Extract relevant 7 inputs from observation
-                    selected_inputs = [
-                        observation[0],
-                        observation[1],
-                        observation[2],
-                        observation[3],
-                        observation[4],
-                        observation[5],
-                        observation[9]
-                    ]
-                    
-                    # Get fuzzy logic decision
-                    fuzzy_output = self.fuzzy_inference(selected_inputs, individual)
-                    action = 1 if fuzzy_output > 0 else 0
-                    
-                    # Take action
-                    observation, reward, terminated, truncated, _ = env.step(action)
-                    done = terminated or truncated
-                    total_reward += reward
-
-                    # Capture frame for GIF
-                    if render:
-                        frame = env.render()
-                        if frame is not None:  # Some environments return None when not rendering
-                            episode_frames.append(frame)
-
-                # Add episode frames to main list
-                frames.extend(episode_frames)
+                # Get fuzzy logic decision
+                fuzzy_output = self.fuzzy_inference(selected_inputs, individual)
+                action = 1 if fuzzy_output > 0 else 0
+                
+                # Take action
+                observation, reward, terminated, truncated, _ = env.step(action)
+                done = terminated or truncated
+                total_reward += reward
 
         finally:
+            # Properly close the environment
             env.close()
-
-        # Save as GIF if rendering was enabled
-        if render and frames:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            gif_path = f"flappy_bird_demo_{timestamp}.gif"
-            
-            # Save using imageio
-            imageio.mimsave(
-                gif_path,
-                [np.array(frame) for frame in frames],
-                fps=30,
-                loop=0
-            )
-            print(f"Saved demo GIF to: {gif_path}")
-
-        return total_reward / 5
-
+        
+        return total_reward
     def tournament_selection(self, population, fitnesses):
         selected = []
         for _ in range(len(population)):
