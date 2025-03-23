@@ -12,8 +12,8 @@ import pygame
 pygame.init()
 
 # Global GA parameters
-POP_SIZE = 500
-N_GENERATIONS = 100
+POP_SIZE = 1000
+N_GENERATIONS = 25
 TOURNAMENT_SIZE = 5
 CX_PROB = 0.7
 MUT_PROB = 0.2
