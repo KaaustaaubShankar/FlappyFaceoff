@@ -4,116 +4,67 @@ import flappy_bird_gymnasium
 import numpy as np
 import matplotlib.pyplot as plt
 import pygame
-import imageio
 import os
 from datetime import datetime
+from itertools import product
+import random
+
+from deap import base, creator, tools, algorithms
 
 pygame.init()
 
-# Global GA parameters
-POP_SIZE = 1000
+# Constants
+POP_SIZE = 400
 N_GENERATIONS = 50
-TOURNAMENT_SIZE = 3
-CX_PROB = 0.7
-MUT_PROB = 0.2
+CX_PROB = 0.8
+MUT_PROB = 0.4
+TOURNAMENT_SIZE = 20
 
+# Crossover and mutation parameters for continuous variables
+ALPHA_BLX = 0.5   # for centers
+ETA_C = 20        # distribution index for SBX (rules)
+ETA_M = 20        # distribution index for polynomial mutation
 
-class GeneticFuzzyControllerFlappyBird:
-    def __init__(self, n_mfs=5):
-        self.n_inputs = 3 
-        self.n_mfs = n_mfs
-        # Define bounds for each of these 3 inputs based on observation space
-        self.mf_bounds = [
-            (0, 1),       # obs[0]: horizontal distance to next pipe
-            (-1, 1),    # obs[2]: vertical distance to bottom of next gap
-            (-8, 10),      # obs[4]: bird's velocity
-        ]
-        self.rule_bounds = (-2, 2)
-        self.n_rules = n_mfs ** self.n_inputs
-        self.n_rule_params = self.n_inputs + 1  # ax + by + cz + d
-        self.total_rule_params = self.n_rules * self.n_rule_params
-
+class GeneticFuzzySystemSevenInputs:
+    def __init__(self):
+        self.mf_bounds = [0, 1]   # centers in [0, 1]
+        self.rule_bounds = [-1, 1]  # rules in [-1, 1]
+        
     def triangular_mf(self, x, params):
         a, b, c = params
+        if x == b:
+            return 1
         if x <= a or x >= c:
             return 0.0
-        if x <= b:
-            return (x - a) / (b - a + 1e-6)
-        else:
-            return (c - x) / (c - b + 1e-6)
+        return (x - a) / (b - a) if x <= b else (c - x) / (c - b)
 
-    def fuzzy_inference(self, state, individual):
-        #print(state)
-        # Extract centers for each input
-        centers = []
-        start = 0
-        for i in range(self.n_inputs):
-            centers_i = np.sort(individual[start:start+self.n_mfs])
-            centers.append(centers_i)
-            start += self.n_mfs
-        rule_params = individual[start:]
+    def fuzzy_inference(self, inputs, individual):
+        centers = individual[:7]
+        rule_consequents = individual[7:]
         
-        # Build membership functions for each input
-        mfs = []
-        for i in range(self.n_inputs):
-            lower, upper = self.mf_bounds[i]
-            c = centers[i]
-            mf_i = []
-            for j in range(self.n_mfs):
-                if j == 0:
-                    a = lower
-                    b = c[j]
-                    next_c = c[j+1] if (j+1) < len(c) else upper
-                elif j == self.n_mfs - 1:
-                    a = c[j-1]
-                    b = c[j]
-                    next_c = upper
-                else:
-                    a = c[j-1]
-                    b = c[j]
-                    next_c = c[j+1]
-                mf_i.append((a, b, next_c))
-            mfs.append(mf_i)
+        membership_grades = []
+        for i in range(7):
+            center = centers[i]
+            mfs = [
+                (0, 0, center),   # left shoulder
+                (0, center, 1),   # triangle centered at center
+                (center, 1, 1)    # right shoulder
+            ]
+            xi = inputs[i]
+            grades = [self.triangular_mf(xi, mf) for mf in mfs]
+            membership_grades.append(grades)
         
-        # Compute membership values
-        membership_values = []
-        for i in range(self.n_inputs):
-            x_val = state[i]
-            mf_vals = [self.triangular_mf(x_val, mf) for mf in mfs[i]]
-            membership_values.append(mf_vals)
-        
-        # Compute rule activations and outputs
         activations = []
-        outputs = []
-        rule_index = 0
-        for idx in np.ndindex(*(self.n_mfs,)*self.n_inputs):
-            activation = min(membership_values[dim][mf_idx] for dim, mf_idx in enumerate(idx))
+        for indices in product(range(3), repeat=7):
+            activation = min(membership_grades[i][indices[i]] for i in range(7))
             activations.append(activation)
-            
-            params = rule_params[rule_index*self.n_rule_params:(rule_index+1)*self.n_rule_params]
-            output = np.dot(params[:self.n_inputs], state) + params[self.n_inputs]
-            outputs.append(output)
-            rule_index += 1
         
-        total_activation = sum(activations) + 1e-6
-        fuzzy_output = sum(act * out for act, out in zip(activations, outputs)) / total_activation
-        return fuzzy_output
-
-    
-
-    def initialize_individual(self):
-        centers = []
-        for i in range(self.n_inputs):
-            lower, upper = self.mf_bounds[i]
-            centers_i = np.sort(np.random.uniform(lower, upper, self.n_mfs))
-            centers.append(centers_i)
-        centers = np.concatenate(centers)
-        rule_params = np.random.uniform(self.rule_bounds[0], self.rule_bounds[1], self.total_rule_params)
-        return np.concatenate([centers, rule_params])
+        total = sum(activations) + 1e-6
+        return np.dot(activations, rule_consequents) / total
 
     def fitness(self, individual, render=False):
         render_mode = "rgb_array" if render else None
-        env = gym.make("FlappyBird-v0", render_mode=render_mode, use_lidar=False)
+        env = gym.make("FlappyBird-v0", render_mode=render_mode, use_lidar=False, normalize_obs=True)
         
         if render:
             os.makedirs("videos", exist_ok=True)
@@ -125,117 +76,241 @@ class GeneticFuzzyControllerFlappyBird:
             )
         
         total_reward = 0
+        
         try:
-            observation, _ = env.reset(seed=42)
-            done = False
-            
-            while not done:
-                if render:
-                    for event in pygame.event.get():
-                        if event.type == pygame.QUIT:
-                            env.close()
-                            return total_reward
+            for seed in [42, 43, 44, 45, 46]:
+                observation, _ = env.reset(seed=seed)
+                done = False
+                
+                while not done:
+                    if render:
+                        for event in pygame.event.get():
+                            if event.type == pygame.QUIT:
+                                env.close()
+                                return total_reward
 
-                selected_inputs = [
-                    observation[0],  # horizontal distance
-                    observation[2],  # vertical distance
-                    observation[4],  # velocity
-                ]
-                
-                fuzzy_output = self.fuzzy_inference(selected_inputs, individual)
-                action = 1 if fuzzy_output > 0 else 0
-                
-                observation, reward, terminated, truncated, _ = env.step(action)
-                done = terminated or truncated
-                total_reward += reward
+                    # Extract the 7 inputs needed for the fuzzy logic
+                    selected_inputs = [
+                        observation[0],  # horizontal distance to next pipe
+                        observation[1],  # vertical distance to top of next gap
+                        observation[2],  # vertical distance to bottom of next gap
+                        observation[3],  # bird's vertical position (y)
+                        observation[4],  # bird's velocity
+                        observation[5],  # horizontal distance to next-next pipe
+                        observation[9]   # vertical distance to next-next gap's top
+                    ]
+                    
+                    fuzzy_output = self.fuzzy_inference(selected_inputs, individual)
+                    action = 1 if fuzzy_output > 0 else 0
+                    
+                    observation, reward, terminated, truncated, _ = env.step(action)
+                    done = terminated or truncated
+                    total_reward += reward
 
         finally:
             env.close()
         
-        return total_reward
+        return total_reward / 5  # Return average reward across seeds
 
-    def tournament_selection(self, population, fitnesses):
-        selected = []
-        for _ in range(len(population)):
-            candidates = np.random.choice(len(population), TOURNAMENT_SIZE, replace=False)
-            best_idx = candidates[np.argmax(fitnesses[candidates])]
-            selected.append(population[best_idx])
-        return selected
+    # The evaluation function for DEAP (must return a tuple)
+    def evaluate(self, individual):
+        return self.fitness(individual, render=False),
 
-    def crossover(self, parent1, parent2):
-        child = np.empty_like(parent1)
-        for i in range(self.n_inputs):
-            start = i * self.n_mfs
-            end = start + self.n_mfs
-            split = np.random.randint(1, self.n_mfs)
-            child[start:start+split] = parent1[start:start+split]
-            child[start+split:end] = parent2[start+split:end]
-            child[start:end] = np.sort(child[start:end])
-        rule_start = self.n_inputs * self.n_mfs
-        p1_rules = parent1[rule_start:]
-        p2_rules = parent2[rule_start:]
-        alpha = np.random.rand(len(p1_rules))
-        child[rule_start:] = alpha * p1_rules + (1 - alpha) * p2_rules
-        return child
-
-    def mutate(self, individual):
-        mut_ind = individual.copy()
-        for i in range(self.n_inputs):
-            lower, upper = self.mf_bounds[i]
-            range_i = upper - lower
-            start = i * self.n_mfs
-            end = start + self.n_mfs
-            if np.random.rand() < MUT_PROB:
-                idx = np.random.randint(self.n_mfs)
-                mutation_step = np.random.normal(0, 0.01 * range_i)
-                mut_ind[start + idx] += mutation_step
-                mut_ind[start:end] = np.sort(mut_ind[start:end])
-                mut_ind[start:end] = np.clip(mut_ind[start:end], lower, upper)
-        rule_start = self.n_inputs * self.n_mfs
-        rule_params = mut_ind[rule_start:]
-        mask = np.random.rand(len(rule_params)) < MUT_PROB
-        noise = np.random.normal(0, 0.1, len(rule_params))
-        rule_params = np.clip(rule_params + mask * noise, self.rule_bounds[0], self.rule_bounds[1])
-        mut_ind[rule_start:] = rule_params
-        return mut_ind
-
-    def run_evolution(self):
-        population = [self.initialize_individual() for _ in range(POP_SIZE)]
-        best_fitness_history = []
-        for gen in range(N_GENERATIONS):
-            fitnesses = np.array([self.fitness(ind,render=False) for ind in population])
-            best_idx = np.argmax(fitnesses)
-            best_fitness_history.append(fitnesses[best_idx])
-            print(f"Gen {gen+1}: Best Fitness (reward) = {best_fitness_history[-1]:.4f}")
-            
-            # Elitism
-            elite = population[best_idx]
-            
-            selected = self.tournament_selection(population, fitnesses)
-            offspring = []
-            for i in range(0, len(population) - 1, 2):
-                p1 = selected[i]
-                p2 = selected[(i+1) % len(selected)]
-                if np.random.rand() < CX_PROB:
-                    c1 = self.crossover(p1, p2)
-                    c2 = self.crossover(p2, p1)
-                    offspring.extend([c1, c2])
-                else:
-                    offspring.extend([p1, p2])
-            
-            offspring = [self.mutate(ind) for ind in offspring]
-            population = offspring + [elite]
+    # --- New advanced crossover ---
+    def crossover_deap(self, ind1, ind2):
+        # For the 7 center genes, use BLX-alpha blend crossover.
+        for i in range(7):
+            x1 = ind1[i]
+            x2 = ind2[i]
+            c_min, c_max = min(x1, x2), max(x1, x2)
+            I = c_max - c_min
+            lower_bound = c_min - ALPHA_BLX * I
+            upper_bound = c_max + ALPHA_BLX * I
+            # Sample new genes uniformly from the extended range.
+            ind1[i] = np.clip(random.uniform(lower_bound, upper_bound), *self.mf_bounds)
+            ind2[i] = np.clip(random.uniform(lower_bound, upper_bound), *self.mf_bounds)
         
-        best_ind = population[np.argmax([self.fitness(ind) for ind in population])]
-        demo_reward = self.fitness(best_ind, render=True)
-        print(f"\nDemo run reward: {demo_reward}")
-        plt.plot(best_fitness_history)
-        plt.xlabel('Generation')
-        plt.ylabel('Best Fitness (reward)')
-        plt.title('Evolution Progress')
+        # For the 2187 rule genes, use simulated binary crossover (SBX).
+        for i in range(7, len(ind1)):
+            if random.random() <= 0.5:
+                if abs(ind1[i] - ind2[i]) > 1e-14:
+                    x1 = min(ind1[i], ind2[i])
+                    x2 = max(ind1[i], ind2[i])
+                    lower, upper = self.rule_bounds
+                    rand = random.random()
+                    beta = 1.0 + (2.0*(x1 - lower)/(x2 - x1))
+                    alpha = 2.0 - beta**-(ETA_C + 1)
+                    if rand <= 1.0/alpha:
+                        betaq = (rand * alpha)**(1.0/(ETA_C+1))
+                    else:
+                        betaq = (1.0/(2.0 - rand * alpha))**(1.0/(ETA_C+1))
+                    c1 = 0.5*((x1 + x2) - betaq*(x2 - x1))
+                    beta = 1.0 + (2.0*(upper - x2)/(x2 - x1))
+                    alpha = 2.0 - beta**-(ETA_C + 1)
+                    if rand <= 1.0/alpha:
+                        betaq = (rand * alpha)**(1.0/(ETA_C+1))
+                    else:
+                        betaq = (1.0/(2.0 - rand * alpha))**(1.0/(ETA_C+1))
+                    c2 = 0.5*((x1 + x2) + betaq*(x2 - x1))
+                    # Randomly assign the children to parents.
+                    if random.random() < 0.5:
+                        ind1[i] = np.clip(c1, lower, upper)
+                        ind2[i] = np.clip(c2, lower, upper)
+                    else:
+                        ind1[i] = np.clip(c2, lower, upper)
+                        ind2[i] = np.clip(c1, lower, upper)
+        return ind1, ind2
+
+    # --- New advanced mutation using polynomial mutation ---
+    def mutate_deap(self, individual):
+        # Mutate centers (first 7 genes)
+        for i in range(7):
+            if random.random() < MUT_PROB / 7:
+                lower, upper = self.mf_bounds
+                x = individual[i]
+                delta1 = (x - lower) / (upper - lower)
+                delta2 = (upper - x) / (upper - lower)
+                rand = random.random()
+                mut_pow = 1.0 / (ETA_M + 1.0)
+                if rand < 0.5:
+                    xy = 1.0 - delta1
+                    val = 2.0 * rand + (1.0 - 2.0 * rand) * (xy ** (ETA_M + 1))
+                    deltaq = (val ** mut_pow) - 1.0
+                else:
+                    xy = 1.0 - delta2
+                    val = 2.0 * (1.0 - rand) + 2.0 * (rand - 0.5) * (xy ** (ETA_M + 1))
+                    deltaq = 1.0 - (val ** mut_pow)
+                x = x + deltaq * (upper - lower)
+                individual[i] = np.clip(x, lower, upper)
+        
+        # Mutate rule consequents (genes 7 to end)
+        for i in range(7, len(individual)):
+            if random.random() < MUT_PROB:
+                lower, upper = self.rule_bounds
+                x = individual[i]
+                delta1 = (x - lower) / (upper - lower)
+                delta2 = (upper - x) / (upper - lower)
+                rand = random.random()
+                mut_pow = 1.0 / (ETA_M + 1.0)
+                if rand < 0.5:
+                    xy = 1.0 - delta1
+                    val = 2.0 * rand + (1.0 - 2.0 * rand) * (xy ** (ETA_M + 1))
+                    deltaq = (val ** mut_pow) - 1.0
+                else:
+                    xy = 1.0 - delta2
+                    val = 2.0 * (1.0 - rand) + 2.0 * (rand - 0.5) * (xy ** (ETA_M + 1))
+                    deltaq = 1.0 - (val ** mut_pow)
+                x = x + deltaq * (upper - lower)
+                individual[i] = np.clip(x, lower, upper)
+        return (individual,)
+
+    def plot_membership_functions(self, individual):
+        plt.figure(figsize=(15, 10))
+        centers = individual[:7]
+        for i in range(7):
+            plt.subplot(3, 3, i+1)
+            center = centers[i]
+            x_vals = np.linspace(*self.mf_bounds, 200)
+            mfs = [
+                (0, 0, center),
+                (0, center, 1),
+                (center, 1, 1)
+            ]
+            for mf in mfs:
+                plt.plot(x_vals, [self.triangular_mf(x, mf) for x in x_vals])
+            plt.title(f"Input {i+1} Membership Functions\nCenter: {center:.2f}")
+        plt.tight_layout()
         plt.show()
 
+    def run_evolution_deap(self):
+        # Define DEAP types
+        creator.create("FitnessMax", base.Fitness, weights=(1.0,))
+        creator.create("Individual", np.ndarray, fitness=creator.FitnessMax)
+        
+        toolbox = base.Toolbox()
+        
+        # Register attribute generators for centers and rules.
+        toolbox.register("init_center", random.random)  # uniform in [0, 1]
+        toolbox.register("init_rule", lambda: random.uniform(self.rule_bounds[0], self.rule_bounds[1]))
+        
+        def init_individual():
+            centers = [random.uniform(self.mf_bounds[0], self.mf_bounds[1]) for _ in range(7)]
+            rules = [random.uniform(self.rule_bounds[0], self.rule_bounds[1]) for _ in range(2187)]
+            genome = np.array(centers + rules)
+            return creator.Individual(genome)
+        
+        toolbox.register("individual", init_individual)
+        toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+        
+        # Register evolutionary operators
+        toolbox.register("evaluate", self.evaluate)
+        toolbox.register("mate", self.crossover_deap)
+        toolbox.register("mutate", self.mutate_deap)
+        toolbox.register("select", tools.selTournament, tournsize=TOURNAMENT_SIZE)
+        
+        # Create initial population
+        population = toolbox.population(n=POP_SIZE)
+        
+        # Setup statistics to track fitness
+        stats = tools.Statistics(lambda ind: ind.fitness.values[0])
+        stats.register("avg", np.mean)
+        stats.register("std", np.std)
+        stats.register("min", np.min)
+        stats.register("max", np.max)
+        
+        logbook = tools.Logbook()
+        logbook.header = ["gen", "evals", "min", "avg", "max"]
+        
+        # Evaluate the entire population
+        fitnesses = list(map(toolbox.evaluate, population))
+        for ind, fit in zip(population, fitnesses):
+            ind.fitness.values = fit
+        
+        record = stats.compile(population)
+        logbook.record(gen=0, evals=len(population), **record)
+        print(logbook.stream)
+        
+        # Begin evolution
+        for gen in range(1, N_GENERATIONS + 1):
+            offspring = toolbox.select(population, len(population))
+            offspring = list(map(toolbox.clone, offspring))
+            
+            # Apply crossover and mutation
+            for i in range(0, len(offspring), 2):
+                if random.random() < CX_PROB:
+                    toolbox.mate(offspring[i], offspring[i+1])
+                    del offspring[i].fitness.values
+                    del offspring[i+1].fitness.values
+            for mutant in offspring:
+                if random.random() < MUT_PROB:
+                    toolbox.mutate(mutant)
+                    del mutant.fitness.values
+            
+            # Evaluate individuals with an invalid fitness
+            invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+            fitnesses = map(toolbox.evaluate, invalid_ind)
+            for ind, fit in zip(invalid_ind, fitnesses):
+                ind.fitness.values = fit
+            
+            population[:] = offspring
+            
+            # Gather statistics for this generation
+            record = stats.compile(population)
+            logbook.record(gen=gen, evals=len(invalid_ind), **record)
+            print(logbook.stream)
+        
+        # Select the best individual
+        best_ind = tools.selBest(population, 1)[0]
+        self.best = best_ind
+        print("Best individual fitness:", best_ind.fitness.values[0])
+        
+        # Demonstrate the best individual with rendering
+        demo_reward = self.fitness(best_ind, render=True)
+        print("Demo Reward:", demo_reward)
+        
+        self.plot_membership_functions(best_ind)
 
-if __name__ == '__main__':
-    controller = GeneticFuzzyControllerFlappyBird(n_mfs=5)  # Now supports more than 3 MFs
-    controller.run_evolution()
+
+if __name__ == "__main__":
+    gfs = GeneticFuzzySystemSevenInputs()
+    gfs.run_evolution_deap()
